@@ -33,7 +33,7 @@ void mprintf(const char *format, ...) {
 #define CHECK(RESULT) if ((RESULT) == -1) _exitErrno(errno, #RESULT , __LINE__)
 #define exitError(id, msg) _exitError(id, msg, __LINE__)
 void _exitError(int id, char *msg, int lineNumber) {
-  mprintf("error: %d, %s\nat line: %d", id, msg, lineNumber);
+  mprintf("error: %d, %s\nat line: %d\n", id, msg, lineNumber);
   exit(id);
 }
 
@@ -50,57 +50,150 @@ void _exitErrno(int id, char *source, int lineNumber) {
 #endif
 
 typedef struct Booking {
-  u32 idUmbrella;
-  i16 start;
-  i16 end;
+  i16 start, end;
+  u32 user;
 } Booking;
 
 typedef struct BookingList {
-  i16 *startEnd; // even: start, odd: end
+  Booking *booking;
   u32 count;
   u32 capacity;
+  u32 lockUser;
+  i16 lockDay;
   pthread_mutex_t mutex;
 } BookingList;
 
-#define N_ROWS 2
-#define N_COLS 5
-#define N_UMBRELLA N_ROWS * N_COLS
+typedef struct Season {
+  int nRows, nCols;
+  int nUmbrella;
+  int year;
+  int start, end;
+  BookingList *bookingList;
+} Season;
 
-#define SEASON_START 0
-#define SEASON_LENGTH 100
+Season *season;
 
-i16 seasonStart;
-i16 seasonEnd;
+char *configfile = "./config";
+char *savefile = "./data";
+char *tempfile = "./.temp";
 
-BookingList *bookingList;
+int isLeap(int year) {
+  return (!(year % 4) && (year % 100)) || !(year % 400);
+}
 
-char *savefile = "./beach.txt";
-char *tempfile = "./.beach.tmp";
+const int pdays[] = {
+  0, 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334, 365,
+  0, 0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335, 366};
 
-void initBookingList() {
-  bookingList = calloc(N_UMBRELLA, sizeof(BookingList));
-  for (u32 i = 0; i < N_UMBRELLA; i++) {
-    pthread_mutex_init(&(bookingList[i].mutex), NULL);
+
+// returns -1 if the date is not valid
+int getYday(int currentYear, int year, int mon, int mday) {
+  if (currentYear != -1 && currentYear != year ) return -1;
+  if (mon < 1 || mon > 12) return -1;
+  if (mday < 1 || mday > (pdays[mon+1] - pdays[mon])) return -1;
+  return pdays[mon + 14 * isLeap(year)] + mday - 1;
+}
+
+int getCurrentYday() {
+  time_t t = time(NULL);
+  struct tm *tm = localtime(&t);
+  return getYday(-1, tm->tm_year, tm->tm_mon, tm->tm_mday);
+}
+
+// returns - 1 if the date is not valid
+int parseDate(char *str, int currentYear) {
+  int year, mon, mday;
+  int ntok = sscanf(str, "%d/%d/%d", &mday, &mon, &year);
+  if (ntok != 3) return -1;
+  return getYday(currentYear, year, mon, mday);
+}
+
+int parseYear(char *str) {
+  int year = 0;
+  sscanf(str, "%*d/%*d/%d", &year);
+  return year;
+}
+
+//requires the buffer to be 11 chars long
+//returns -1 if the yday is not valid
+int getDateString(char *out, size_t len, int year, int yday) {
+  int leap = isLeap(year);
+  int max = leap ? 366 : 365;
+  if (yday >= max) return -1;
+  int mon;
+  for (mon = 1; yday > pdays[mon+1]; mon++);
+  int mday = yday - pdays[mon] + 1;
+  snprintf(out, len, "%02d/%02d/%04d", mday, mon, year);
+  return 0;
+}
+
+void loadConfig(Season *season) {
+  FILE *fp = fopen(configfile, "r");
+  if (fp == NULL) exitError(-1, "config file not found");
+
+  char *tokstate;
+  char *line;
+  size_t bufSize;
+  int count = 1;
+  while (getline(&line, &bufSize, fp) != -1) {
+    char *key = strtok_r(line, " =", &tokstate);
+    char *value = strtok_r(NULL, " =", &tokstate);
+    if (key == NULL) continue;
+    if (key[0] == '#') continue;
+    if (value == NULL) exitError( -1, "invalid config file");
+
+    if (!strcmp(key, "start")) {
+      int yday = parseDate(value, -1);
+      int year = parseYear(value);
+      season->start = yday;
+      season->year = year;
+    } else if (!strcmp(key, "end")) {
+      int yday = parseDate(value, -1);
+      season->end = yday;
+    } else if (!strcmp(key, "rows")) {
+      int nRows = atoi(value);
+      season->nRows = nRows;
+    } else if (!strcmp(key, "cols")) {
+      int nCols = atoi(value);
+      season->nCols = nCols;
+    } else {
+      exitError( -1, "invalid config file");
+    }
+
+    count++;
   }
-  seasonStart = SEASON_START * 2;
-  seasonEnd = seasonStart + SEASON_LENGTH * 2 + 1; 
+  if (season->nCols == 0 || season->nRows == 0 ||
+      season->start == -1 || season->end == -1 ||
+      season->year == 0)
+    exitError( -1, "invalid config file");
+
+  season->nUmbrella = season->nCols * season->nRows;
+}
+
+
+void initBookingList(Season *season) {
+  season->bookingList = calloc(season->nUmbrella, sizeof(BookingList));
+  for (u32 i = 0; i < season->nUmbrella; i++) {
+    pthread_mutex_init(&(season->bookingList[i].mutex), NULL);
+  }
 }
 
 int odd(i16 n) { return n & 1; }
 int even(i16 n) { return !(n & 1); }
 
-void saveBookingList() {
+void saveBookingList(Season *season) {
   FILE *fp = fopen(tempfile, "w");
   if (fp == NULL) exitError(errno, "failed to open file for writing");
 
-  for (u32 i = 0; i < N_UMBRELLA; i++) {
-    BookingList *list = bookingList + i;
+  for (u32 i = 0; i < season->nUmbrella; i++) {
+    BookingList *list = season->bookingList + i;
     pthread_mutex_lock(&list->mutex);
-    i16 *array = list->startEnd;
+    Booking *array = list->booking;
     u32 count = list->count;
-    fprintf(fp, "%d", count);
+    fprintf(fp, "%d %d %d", count, list->lockUser, list->lockDay);
     for (u32 j = 0; j < count; j++) {
-      fprintf(fp, " %d", array[j]);
+      Booking *booking = array + j;
+      fprintf(fp, " %d %d %d", booking->user, booking->start, booking->end);
     }
     fprintf(fp, "\n");
     pthread_mutex_unlock(&list->mutex);
@@ -111,7 +204,7 @@ void saveBookingList() {
   rename(tempfile, savefile);
 }
 
-void loadBookingList() {
+void loadBookingList(Season *season) {
   FILE *fp;
   fp = fopen(savefile, "r");
   if (fp == NULL) {
@@ -122,30 +215,34 @@ void loadBookingList() {
 
   char *line = NULL;
   size_t bufSize = 0;
-  for (u32 i = 0; i < N_UMBRELLA; i++) {
+  for (u32 i = 0; i < season->nUmbrella; i++) {
     CHECK(getline(&line, &bufSize, fp));
 
-    BookingList *list = bookingList + i;
+    BookingList *list = season->bookingList + i;
     pthread_mutex_lock(&list->mutex);
 
     char *tokstate;
-    char *token = strtok_r(line, " ", &tokstate);
-    if (token == NULL) exitError(i, "error on parsing this line of file.");
-    u32 count = atoi(token);
-    list->startEnd = realloc(list->startEnd, count * sizeof(i16));
+    char *countToken = strtok_r(line, " ", &tokstate);
+    char *userToken = strtok_r(NULL, " ", &tokstate);
+    char *dayToken = strtok_r(NULL, " ", &tokstate);
+    if (dayToken == NULL) exitError(i, "error on parsing this line of file.");
+    u32 count = atoi(countToken);
+    list->booking = realloc(list->booking, count * sizeof(Booking));
     list->count = count;
     list->capacity = count;
-    int expect = 1;
+    list->lockUser = atoi(userToken);
+    list->lockDay = atoi(dayToken);
+
     for (u32 j = 0; j < count; j++) {
-      token = strtok_r(NULL, " ", &tokstate);
-      if (token == NULL) exitError(i, "too few arguments on this line.");
-      i16 time = atoi(token);
-      if (even(time) != expect) {
-        mprintf("Argument %d of line %d not expected.\n", j, i);
-        exit(-1);
-      }
-      expect = !expect;
-      list->startEnd[j] = time;
+      char *user = strtok_r(NULL, " ", &tokstate);
+      char *start = strtok_r(NULL, " ", &tokstate);
+      char *end = strtok_r(NULL, " ", &tokstate);
+      if (end == NULL) exitError(i, "too few arguments on this line.");
+      Booking *booking = list->booking + j;
+      booking->user = atoi(user);
+      booking->start = atoi(start);
+      booking->end = atoi(end);
+      if (booking->start > booking->end) exitError(i, "invalid booking.");
     }
     if (strtok_r(NULL, " ", &tokstate) != NULL) exitError(i, " too many arguments on this line.");
     pthread_mutex_unlock(&list->mutex);
@@ -153,88 +250,53 @@ void loadBookingList() {
   fclose(fp);
 }
 
-int removeBooking(u32 idUmbrella, i16 start, i16 end) {
-  start = start * 2;
-  end = end * 2 + 1;
-  if (idUmbrella >= N_UMBRELLA) return -1;
-  if (start > end)              return -1;
-  if (start < seasonStart)      return -1;
-  if (end > seasonEnd)          return -1;
+int removeBooking(Season *season, u32 user, u32 idUmbrella) {
+  if (idUmbrella >= season->nUmbrella) return -1;
 
-  BookingList *list = bookingList + idUmbrella;
+  BookingList *list = season->bookingList + idUmbrella;
   pthread_mutex_lock(&list->mutex);
-  i16 *array = list->startEnd;
-  u32 count = list->count;
-  
-  i16 smaller = seasonStart - 1;
-  i16 bigger = seasonEnd + 1;
-  int i = 0;
-  for (; i < count; i++) {
-    i16 val = array[i];
-    if (val < start) smaller = val;
-    else break;
-  }
-  int j = i;
-  for (; j < count; j++) {
-    i16 val = array[j];
-    if (val > end) { bigger = val; break; }
-  }
-  
-  size_t tsize = (count - j) * sizeof(i16);
-  i16 *buffer = NULL;
-  if (tsize) buffer = memcpy(malloc(tsize), array + j, tsize);
-  count = i + count - j;
-  if (even(smaller)) count++;
-  if (odd(bigger)) count++;
-  list->count = count;
+  Booking *array = list->booking;
 
-  if (count >= list->capacity) {
-    list->capacity *= 2;
-    list->startEnd = realloc(list->startEnd, list->capacity * sizeof(i16));
-    array = list->startEnd;
+  for (int i = list->count-1; i >= 0; i--) {
+    if (array[i].user == user) {
+      list->count--;
+      if (i <= list->count)
+        memmove(array + i, array + i + 1, (list->count - i) * sizeof(Booking));
+    }
   }
 
-  if (even(smaller)) array[i++] = start - 1;
-  if (odd(bigger)) array[i++] = end + 1;
-  if (tsize) memcpy(array + i, buffer, tsize);
-  free(buffer);
   pthread_mutex_unlock(&list->mutex);
   return 0;
 }
 
-int _testSetBooking(u32 idUmbrella, i16 start, i16 end, int testOnly) {
-  start = start * 2;
-  end = end * 2 + 1;
-  if (idUmbrella >= N_UMBRELLA) return -1;
-  if (start > end)              return -1;
-  if (start < seasonStart)      return -1;
-  if (end > seasonEnd)          return -1;
+int _testSetBooking(Season *season, u32 user, u32 idUmbrella, i16 start, i16 end, int testOnly) {
+  if (idUmbrella >= season->nUmbrella) return -1;
+  if (start > end)                     return -1;
+  if (start < season->start)           return -1;
+  if (end > season->end)               return -1;
 
-  BookingList *list = bookingList + idUmbrella;
+  BookingList *list = season->bookingList + idUmbrella;
   pthread_mutex_lock(&list->mutex);
-  i16 *array = list->startEnd;
-  u32 count = list->count;
-  int i = 0;
-  for (; i < count; i++) {
-    i16 val = array[i];
-    if (val < start) continue;
-    else if (val == start) goto fail;
-    else if (val < end || odd(val)) goto fail;
-    else if (testOnly) goto success;
-    else break;
-  }
+  Booking *array = list->booking;
 
-  list->count += 2;
-  if (list->count > list->capacity) {
-    list->capacity *= 2;
-    if (list->capacity == 0) list->capacity = 4;
-    list->startEnd = realloc(list->startEnd, list->capacity * sizeof(i16));
-    array = list->startEnd;
+  u32 i;
+  for (i = 0; i < list->count; i++) {
+    if (array[i].end >= start) {
+      if (array[i].start > end) break;
+      else goto fail;
+    }
   }
-  if (i < count)
-    memmove(array + i + 2, array + i, sizeof(i16) * count);
-  array[i] = start;
-  array[i+1] = end;
+  if(testOnly) goto success;
+  if (list->count == list->capacity) {
+    list->capacity += list->capacity + 1;
+    array = list->booking = realloc(list->booking, sizeof(Booking) * list->capacity);
+  }
+  if (i < list->count)
+    memmove(array + i + 1, array + i, (list->count - i) * sizeof(Booking));
+  array[i].user = user;
+  array[i].start = start;
+  array[i].end = end;
+  list->count++;
 success:
   pthread_mutex_unlock(&list->mutex);
   return 0;
@@ -244,21 +306,78 @@ fail:
 }
 
 //returns 0 if the booking is available
-int testBooking(u32 idUmbrella, i16 start, i16 end) {
-  return _testSetBooking(idUmbrella, start, end, 1);
+int testBooking(Season *season, u32 user, u32 idUmbrella, i16 start, i16 end) {
+  return _testSetBooking(season, user, idUmbrella, start, end, 1);
 }
 //returns 0 if the booking is successful
-int addBooking(u32 idUmbrella, i16 start, i16 end) {
-  return _testSetBooking(idUmbrella, start, end, 0);
+int addBooking(Season *season, u32 user, u32 idUmbrella, i16 start, i16 end) {
+  return _testSetBooking(season, user, idUmbrella, start, end, 0);
+}
+
+int swrite(int socket, char *text) {
+  int size = strlen(text) + 1;
+  return write(socket, text, size);
 }
 
 void *socketListener(void *commSocket) {
   int csd = *(int *)commSocket;
+  int logged = 0;
+  struct timeval tv = {0};
+  tv.tv_sec = 60;
+  setsockopt(csd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(struct timeval));
   char buf[100];
-  for (;;) {
-    read(csd, buf, 100);
+  for (int i = 0; i < 20; i++) {
+    int error = read(csd, buf, 100);
+    if (error < 1) break;
+
+    char *tokstate;
+    char toks[10];
+    int nToks = 0;
+    toks[0] = strtok_r(buf, " ", &tokstate);
+    while(toks[nToks]) {
+      nToks++;
+      toks[nToks] = strtok_r(NULL, " ", &tokstate);
+    }
+    if (nToks == 0) continue;
+    if (!logged) {
+      if (!(strcmp(toks[0], "login"))) {
+
+      } else {
+        swrite(csd, "nlogin");
+      }
+    } else {
+      if (!strcmp(toks[0], "book")) {
+        if (nToks < 2) {
+          swrite(csd, "ok");
+          break;
+        }
+        int nUmbrella = atoi(toks[1]);
+        if (nToks < 3) {
+          // se disponibile imposta come prenotato
+          break;
+        }
+        int start, end;
+        if (nToks < 4) {
+          start = getCurrentYday();
+          end = parseDate(toks[2]);
+        } else {
+          start = parseDate(toks[2]);
+          end = parseDate(toks[3]);
+        }
+
+      } else if (!strcmp(toks[0], "available")) {
+
+      } else if (!strcmp(toks[0], "cancel")) {
+
+      } else {
+        swrite(csd, "retry");
+      }
+    }
+
     mprintf("%s\n", buf);
   }
+  close(csd);
+  exitError(0, "disconnesso");
   return NULL;
 }
 
@@ -276,7 +395,7 @@ void *socketAccept(void *masterSocket) {
 }
 
 void term(int sig) {
-  saveBookingList();
+  saveBookingList(season);
   mprintf("exit!\n");
   exit(0);
 }
@@ -289,18 +408,21 @@ int serverMain(int argc, char **argv) {
   sa.sin_family = AF_INET;
   sa.sin_port = htons(50000);
   sa.sin_addr.s_addr = INADDR_ANY;
-
   logStream = stdout;
   pthread_mutex_init(&logMutex, NULL);
 
-  initBookingList();
-  loadBookingList();
+  season = calloc(1, sizeof(Season));
+  loadConfig(season);
+
+  initBookingList(season);
+  loadBookingList(season);
+
+  mprintf("%d %d\n", season->start, season->end);
 
   if (atoi(argv[4]))
-    addBooking(atoi(argv[1]), atoi(argv[2]), atoi(argv[3]));
+    addBooking(season, atoi(argv[5]), atoi(argv[1]), atoi(argv[2]), atoi(argv[3]));
   else
-    removeBooking(atoi(argv[1]), atoi(argv[2]), atoi(argv[3]));
-  term(0);
+    removeBooking(season, atoi(argv[5]), atoi(argv[1]));
 
   int msd;
   CHECK(msd = socket(AF_INET, SOCK_STREAM, 0));
@@ -313,9 +435,14 @@ int serverMain(int argc, char **argv) {
   return 0;
 }
 
+void asdf(int sd, char *str) {
+  int len = strlen(str) + 1;
+  ssize_t tt = write(sd, str, len);
+  printf("%zd ", tt);
+  usleep(1000);
+}
+
 int clientMain(int argc, char **argv) {
-  char *msg = argv[1];
-  int msgLen = strlen(msg) + 1;
   struct sockaddr_in sa = {0};
   sa.sin_family = AF_INET;
   sa.sin_port = htons(50000);
@@ -326,7 +453,11 @@ int clientMain(int argc, char **argv) {
   CHECK(connect(sd, (struct sockaddr*)&sa, sizeof(sa)));
 
   while(1) {
-    write(sd, msg, msgLen);
-    usleep(10000000);
+    asdf(sd, "book 10\n");
+    asdf(sd, "book\nbook 20\nbook 30 12/06/2017\n");
+    asdf(sd, "available 3 cancel 2 book book 73 book 74");
+    asdf(sd, " book 75 23/06/2017\n");
+    printf("\n");
+    usleep(1000000);
   }
 }
