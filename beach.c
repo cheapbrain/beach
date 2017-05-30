@@ -18,36 +18,24 @@ typedef uint8_t u8;
 typedef uint32_t u32;
 typedef uint64_t u64;
 
-FILE *logStream;
-pthread_mutex_t logMutex;
-
-void mprintf(const char *format, ...) {
-  va_list args;
-  va_start (args, format);
-  pthread_mutex_lock(&logMutex);
-  vfprintf(logStream, format, args);
-  pthread_mutex_unlock(&logMutex);
-  va_end(args);
-}
-
-#define CHECK(RESULT) if ((RESULT) == -1) _exitErrno(errno, #RESULT , __LINE__)
-#define exitError(id, msg) _exitError(id, msg, __LINE__)
-void _exitError(int id, char *msg, int lineNumber) {
-  mprintf("error: %d, %s\nat line: %d\n", id, msg, lineNumber);
-  exit(id);
-}
-
-void _exitErrno(int id, char *source, int lineNumber) {
-  mprintf("line: %d - %s, error: %s\n", lineNumber, source, strerror(id));
-  exit(id);
-}
-
-
 #if defined(SERVER)
 #define serverMain main
 #elif defined(CLIENT)
 #define clientMain main
 #endif
+
+char *configfile = "./config";
+char *savefile = "./data";
+char *tempfile = "./.temp";
+char *logFile = "./log";
+FILE *logStream;
+pthread_mutex_t logMutex;
+
+typedef struct String {
+  char *str;
+  size_t size;
+  size_t len;
+} String;
 
 typedef struct Booking {
   i16 start, end;
@@ -73,19 +61,98 @@ typedef struct Season {
 
 Season *season;
 
-char *configfile = "./config";
-char *savefile = "./data";
-char *tempfile = "./.temp";
+//prints formatted text to the logfile
+void mprintf(const char *format, ...);
+
+//cancats fomatted text to a String and grows it if it doesn't fit
+int dcatf(String *string, const char *format, ...);
+
+//convert year, month, day to an integer (1-365)
+int getYday(int currentYear, int year, int mon, int mday);
+//returns yday for the current day
+int getCurrentYday();
+//convert date formatted like dd/mm/yyyy into yday
+int parseDate(char *str, int currentYear);
+//convert date formatted like dd/mm/yyyy into the corresponding year
+int parseYear(char *str);
+//convert yday into a string formatted like dd/mm/yyyy
+int getDateString(char *out, size_t len, int year, int yday);
+
+void loadConfig(Season *season);
+void initBookingList(Season *season);
+void saveBookingList(Season *season);
+void loadBookingList(Season *season);
+
+//lock for preventing multiple users to book at the same time
+int lockBooking(Season *season, u32 user, u32 idUmbrella);
+void unlockBooking(Season *season, u32 idUmbrella);
+
+int removeBooking(Season *season, u32 user, u32 idUmbrella);
+int addBooking(Season *season, u32 user, u32 idUmbrella, i16 start, i16 end);
+int testBooking(Season *season, u32 user, u32 idUmbrella, i16 start, i16 end);
+
+//write text to a socket
+int swrite(int socket, char *text);
+//read from a socket and split into tokens
+int readToks(int csd, char *buffer, size_t bufferSize, char *toks[], int maxToks);
+
+//thread for communication with a single user
+void *socketListener(void *commSocket);
+//thread for accepting users connections
+void *socketAccept(void *masterSocket);
+
+//macro for detecting errors
+#define CHECK(RESULT) if ((RESULT) == -1) _exitErrno(errno, #RESULT , __LINE__)
+#define exitError(id, msg) _exitError(id, msg, __LINE__)
+void _exitError(int id, char *msg, int lineNumber) {
+  mprintf("error: %d, %s\nat line: %d\n", id, msg, lineNumber);
+  exit(id);
+}
+
+void _exitErrno(int id, char *source, int lineNumber) {
+  mprintf("line: %d - %s, error: %s\n", lineNumber, source, strerror(id));
+  exit(id);
+}
+
+void term(int sig) {
+  saveBookingList(season);
+  mprintf("exit!\n");
+  exit(0);
+}
+
+void mprintf(const char *format, ...) {
+  va_list args;
+  va_start (args, format);
+  pthread_mutex_lock(&logMutex);
+  vfprintf(logStream, format, args);
+  fflush(logStream);
+  pthread_mutex_unlock(&logMutex);
+  va_end(args);
+}
+
+int dcatf(String *string, const char *format, ...) {
+  va_list args;
+  va_start (args, format);
+  char tmp[100];
+  int len = vsprintf(tmp, format, args) + 1;
+  int tlen = len + string->len;
+  if (tlen > string->size) {
+    string->size *= 2;
+    if (string->size < tlen) string->size = tlen;
+    string->str = realloc(string->str, string->size);
+  }
+  memcpy(string->str + string->len, tmp, len);
+  va_end(args);
+  string->len = --tlen;
+  return tlen;
+}
 
 int isLeap(int year) {
   return (!(year % 4) && (year % 100)) || !(year % 400);
 }
-
 const int pdays[] = {
   0, 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334, 365,
   0, 0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335, 366};
-
-
 // returns -1 if the date is not valid
 int getYday(int currentYear, int year, int mon, int mday) {
   if (currentYear != -1 && currentYear != year ) return -1;
@@ -97,7 +164,7 @@ int getYday(int currentYear, int year, int mon, int mday) {
 int getCurrentYday() {
   time_t t = time(NULL);
   struct tm *tm = localtime(&t);
-  return getYday(-1, tm->tm_year, tm->tm_mon, tm->tm_mday);
+  return getYday(-1, tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday);
 }
 
 // returns - 1 if the date is not valid
@@ -132,7 +199,7 @@ void loadConfig(Season *season) {
   if (fp == NULL) exitError(-1, "config file not found");
 
   char *tokstate;
-  char *line;
+  char *line = NULL;
   size_t bufSize;
   int count = 1;
   while (getline(&line, &bufSize, fp) != -1) {
@@ -168,8 +235,8 @@ void loadConfig(Season *season) {
     exitError( -1, "invalid config file");
 
   season->nUmbrella = season->nCols * season->nRows;
+  fclose(fp);
 }
-
 
 void initBookingList(Season *season) {
   season->bookingList = calloc(season->nUmbrella, sizeof(BookingList));
@@ -177,9 +244,6 @@ void initBookingList(Season *season) {
     pthread_mutex_init(&(season->bookingList[i].mutex), NULL);
   }
 }
-
-int odd(i16 n) { return n & 1; }
-int even(i16 n) { return !(n & 1); }
 
 void saveBookingList(Season *season) {
   FILE *fp = fopen(tempfile, "w");
@@ -250,6 +314,28 @@ void loadBookingList(Season *season) {
   fclose(fp);
 }
 
+void unlockBooking(Season *season, u32 idUmbrella) {
+  if (idUmbrella >= season->nUmbrella) return;
+  BookingList *list = season->bookingList + idUmbrella;
+  pthread_mutex_lock(&list->mutex);
+  list->lockUser = 0;
+  pthread_mutex_unlock(&list->mutex);
+}
+
+int lockBooking(Season *season, u32 user, u32 idUmbrella) {
+  if (idUmbrella >= season->nUmbrella) return 0;
+  BookingList *list = season->bookingList + idUmbrella;
+  pthread_mutex_lock(&list->mutex);
+  int today = getCurrentYday();
+  int avail = (list->lockUser == 0 || list->lockUser == user || list->lockDay < today);
+  if (avail) {
+    list->lockUser = user;
+    list->lockDay = today;
+  }
+  pthread_mutex_unlock(&list->mutex);
+  return avail;
+}
+
 int removeBooking(Season *season, u32 user, u32 idUmbrella) {
   if (idUmbrella >= season->nUmbrella) return -1;
 
@@ -297,6 +383,7 @@ int _testSetBooking(Season *season, u32 user, u32 idUmbrella, i16 start, i16 end
   array[i].start = start;
   array[i].end = end;
   list->count++;
+  list->lockUser = 0;
 success:
   pthread_mutex_unlock(&list->mutex);
   return 0;
@@ -319,65 +406,158 @@ int swrite(int socket, char *text) {
   return write(socket, text, size);
 }
 
+int readToks(int csd, char *buffer, size_t bufferSize, char *toks[], int maxToks) {
+  static const char sep[] = " \n\r";
+  memset(buffer, 0, bufferSize);
+  int error = read(csd, buffer, bufferSize);
+  if (error < 1) return error;
+  char *tokstate;
+  int nToks = 0;
+  toks[0] = strtok_r(buffer, sep, &tokstate);
+  while(toks[nToks]) {
+    nToks++;
+    if (nToks >= maxToks) break;
+    toks[nToks] = strtok_r(NULL, sep, &tokstate);
+  }
+  return nToks;
+}
+
+int ckm(char *a, char *b, int n1, int n2) {
+  return !strcmp(a, b) && n1 == n2;
+}
+
 void *socketListener(void *commSocket) {
   int csd = *(int *)commSocket;
   int logged = 0;
+  int user = 0;
   struct timeval tv = {0};
   tv.tv_sec = 60;
   setsockopt(csd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(struct timeval));
+
   char buf[100];
-  for (int i = 0; i < 20; i++) {
-    int error = read(csd, buf, 100);
-    if (error < 1) break;
-
-    char *tokstate;
-    char toks[10];
-    int nToks = 0;
-    toks[0] = strtok_r(buf, " ", &tokstate);
-    while(toks[nToks]) {
-      nToks++;
-      toks[nToks] = strtok_r(NULL, " ", &tokstate);
-    }
-    if (nToks == 0) continue;
+  char *toks[10];
+  int nToks;
+  for (;;) {
+    if ((nToks = readToks(csd, buf, 100, toks, 10)) < 1) break;
     if (!logged) {
-      if (!(strcmp(toks[0], "login"))) {
-
-      } else {
-        swrite(csd, "nlogin");
-      }
+      if (ckm(toks[0], "login", nToks, 2)) {
+        user = atoi(toks[1]);
+        logged = 1;
+        swrite(csd, "ok");
+      } else swrite(csd, "nlogin");
     } else {
-      if (!strcmp(toks[0], "book")) {
-        if (nToks < 2) {
-          swrite(csd, "ok");
-          break;
-        }
-        int nUmbrella = atoi(toks[1]);
-        if (nToks < 3) {
-          // se disponibile imposta come prenotato
-          break;
-        }
+
+      if (ckm(toks[0], "book", nToks, 1)) {
+        swrite(csd, "ok");
+
+        if ((nToks = readToks(csd, buf, 100, toks, 10)) < 1) break;
+        if (ckm(toks[0], "book", nToks, 2)) {
+          int nUmbrella = atoi(toks[1]);
+          if (lockBooking(season, user, nUmbrella)) { 
+
+            swrite(csd, "available");
+            if ((nToks = readToks(csd, buf, 100, toks, 10)) < 1) break;
+            if (ckm(toks[0], "book", nToks, 3) ||
+                ckm(toks[0], "book", nToks, 4)) {
+              int start, end;
+              if (nToks < 4) {
+                start = getCurrentYday();
+                end = parseDate(toks[2], season->year);
+              } else {
+                start = parseDate(toks[2], season->year);
+                end = parseDate(toks[3], season->year);
+              }
+              if (!addBooking(season, user, nUmbrella, start, end)) { // se data disponibile
+                swrite(csd, "done");
+              } else {
+                swrite(csd, "navailable");
+                unlockBooking(season, nUmbrella);
+              }
+
+            } else if (ckm(toks[0], "cancel", nToks, 1)) {
+              unlockBooking(season, nUmbrella);
+              swrite(csd, "ok");
+
+            } else swrite(csd, "failed");
+          } else swrite(csd, "navailable");
+        } else swrite(csd, "failed");
+
+      } else if (ckm(toks[0], "available", nToks, 3) ||
+                 ckm(toks[0], "available", nToks, 2) ||
+                 ckm(toks[0], "available", nToks, 1)) {
         int start, end;
-        if (nToks < 4) {
+        if (nToks == 1) {
+          start = end = getCurrentYday();
+        } else if (nToks == 2) {
           start = getCurrentYday();
-          end = parseDate(toks[2]);
+          end = parseDate(toks[1], season->year);
         } else {
-          start = parseDate(toks[2]);
-          end = parseDate(toks[3]);
+          start = parseDate(toks[1], season->year);
+          end = parseDate(toks[2], season->year);
         }
+        String umb = {};
+        dcatf(&umb, "available");
+        for (int i = 0; i < season->nUmbrella; i++) {
+          int avail = testBooking(season, user, i, start, end);
+          if (!avail) dcatf(&umb, " %d", i);
+        }
+        if (!strcmp(umb.str, "available")) swrite(csd, "navailable");
+        else swrite(csd, umb.str);
+        free(umb.str);
 
-      } else if (!strcmp(toks[0], "available")) {
+      } else if (ckm(toks[0], "availrow", nToks, 4) ||
+                 ckm(toks[0], "availrow", nToks, 3) ||
+                 ckm(toks[0], "availrow", nToks, 2)) {
+        int start, end;
+        if (nToks == 2) {
+          start = end = getCurrentYday();
+        } else if (nToks == 3) {
+          start = getCurrentYday();
+          end = parseDate(toks[2], season->year);
+        } else {
+          start = parseDate(toks[2], season->year);
+          end = parseDate(toks[3], season->year);
+        }
+        int row = atoi(toks[1]);
+        int is = row * season->nCols;
+        int ie = is + season->nCols;
+        String umb = {};
+        dcatf(&umb, "available");
+        for (int i = is; i < ie; i++) {
+          int avail = testBooking(season, user, i, start, end);
+          if (!avail) dcatf(&umb, " %d", i);
+        }
+        if (!strcmp(umb.str, "available")) swrite(csd, "navailable");
+        else swrite(csd, umb.str);
+        free(umb.str);
 
-      } else if (!strcmp(toks[0], "cancel")) {
-
-      } else {
-        swrite(csd, "retry");
-      }
+      } else if (ckm(toks[0], "cancel", nToks, 2)) {
+        int nUmbrella = atoi(toks[1]);
+        if (!removeBooking(season, user, nUmbrella)) swrite(csd, "cancel ok");
+        else swrite(csd, "failed");
+      } else if (ckm(toks[0], "logout", nToks, 1)) {
+        swrite(csd, "bye");
+        break;
+      } else if (ckm(toks[0], "save", nToks, 1)) {
+        saveBookingList(season);
+        swrite(csd, "ok");
+      } else if (ckm(toks[0], "today", nToks, 1)) {
+        char dateStr[32];
+        getDateString(dateStr, 32, season->year, getCurrentYday());
+        swrite(csd, dateStr);
+      } else if (ckm(toks[0], "start", nToks, 1)) {
+        char dateStr[32];
+        getDateString(dateStr, 32, season->year, season->start);
+        swrite(csd, dateStr);
+      } else if (ckm(toks[0], "end", nToks, 1)) {
+        char dateStr[32];
+        getDateString(dateStr, 32, season->year, season->end);
+        swrite(csd, dateStr);
+      } else swrite(csd, "unknown");
     }
-
-    mprintf("%s\n", buf);
   }
+
   close(csd);
-  exitError(0, "disconnesso");
   return NULL;
 }
 
@@ -394,35 +574,22 @@ void *socketAccept(void *masterSocket) {
   return NULL;
 }
 
-void term(int sig) {
-  saveBookingList(season);
-  mprintf("exit!\n");
-  exit(0);
-}
-
 int serverMain(int argc, char **argv) {
   signal(SIGINT, term);
   signal(SIGTERM, term);
   signal(SIGQUIT, term);
   struct sockaddr_in sa = {0};
   sa.sin_family = AF_INET;
-  sa.sin_port = htons(50000);
+  sa.sin_port = htons(12345);
   sa.sin_addr.s_addr = INADDR_ANY;
-  logStream = stdout;
+
+  logStream = fopen(logFile, "w");
   pthread_mutex_init(&logMutex, NULL);
 
   season = calloc(1, sizeof(Season));
   loadConfig(season);
-
   initBookingList(season);
   loadBookingList(season);
-
-  mprintf("%d %d\n", season->start, season->end);
-
-  if (atoi(argv[4]))
-    addBooking(season, atoi(argv[5]), atoi(argv[1]), atoi(argv[2]), atoi(argv[3]));
-  else
-    removeBooking(season, atoi(argv[5]), atoi(argv[1]));
 
   int msd;
   CHECK(msd = socket(AF_INET, SOCK_STREAM, 0));
@@ -435,29 +602,26 @@ int serverMain(int argc, char **argv) {
   return 0;
 }
 
-void asdf(int sd, char *str) {
-  int len = strlen(str) + 1;
-  ssize_t tt = write(sd, str, len);
-  printf("%zd ", tt);
-  usleep(1000);
-}
-
 int clientMain(int argc, char **argv) {
   struct sockaddr_in sa = {0};
   sa.sin_family = AF_INET;
-  sa.sin_port = htons(50000);
+  sa.sin_port = htons(12345);
   sa.sin_addr.s_addr = inet_addr("127.0.0.1");
 
   int sd;
   CHECK(sd = socket(AF_INET, SOCK_STREAM, 0));
   CHECK(connect(sd, (struct sockaddr*)&sa, sizeof(sa)));
 
+  char buffer[1000];
+  char *line = NULL;
+  size_t size = 0;
+  int len = 0;
   while(1) {
-    asdf(sd, "book 10\n");
-    asdf(sd, "book\nbook 20\nbook 30 12/06/2017\n");
-    asdf(sd, "available 3 cancel 2 book book 73 book 74");
-    asdf(sd, " book 75 23/06/2017\n");
-    printf("\n");
-    usleep(1000000);
+    if ((len = getline(&line, &size, stdin)) == -1) continue;
+    write(sd, line, len);
+    if (read(sd, buffer, 1000) < 1) break;
+    printf("%s\n", buffer);
   }
+  close(sd);
+  return 0;
 }
