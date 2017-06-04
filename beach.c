@@ -568,7 +568,10 @@ void *socketAccept(void *masterSocket) {
   for (;;) {
     socket[count] = accept(msd, NULL, 0);
     pthread_t child;
-    pthread_create(&child, NULL, socketListener, socket + count);
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHE);
+    pthread_create(&child, &attr, socketListener, socket + count);
     count++;
   }
   return NULL;
