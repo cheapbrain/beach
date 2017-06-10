@@ -10,6 +10,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <pthread.h>
+#include <semaphore.h>
 #include <unistd.h>
 #include <stdarg.h>
 
@@ -30,6 +31,24 @@ char *tempfile = "./.temp";
 char *logFile = "./log";
 FILE *logStream;
 pthread_mutex_t logMutex;
+
+#define MAX_CONN 3
+
+typedef struct Connection {
+  int id;
+  int csd;
+  int prev;
+  int next;
+} Connection;
+
+typedef struct ConnectionList {
+  Connection *conn;
+  u32 count;
+  u32 max;
+  int closed;
+  int open;
+  pthread_mutex_t mutex;
+} ConnectionList;
 
 typedef struct String {
   char *str;
@@ -60,6 +79,7 @@ typedef struct Season {
 } Season;
 
 Season *season;
+ConnectionList *conns;
 
 //prints formatted text to the logfile
 void mprintf(const char *format, ...);
@@ -101,6 +121,11 @@ void *socketListener(void *commSocket);
 //thread for accepting users connections
 void *socketAccept(void *masterSocket);
 
+void initConnectionList(ConnectionList *conns);
+Connection *addConnection(ConnectionList *conns, int csd);
+void removeConnection(ConnectionList *conns, int id);
+void closeConnections(ConnectionList *conns, Season *season);
+
 //macro for detecting errors
 #define CHECK(RESULT) if ((RESULT) == -1) _exitErrno(errno, #RESULT , __LINE__)
 #define exitError(id, msg) _exitError(id, msg, __LINE__)
@@ -115,6 +140,7 @@ void _exitErrno(int id, char *source, int lineNumber) {
 }
 
 void term(int sig) {
+  closeConnections(conns, season);
   saveBookingList(season);
   mprintf("exit!\n");
   exit(0);
@@ -200,7 +226,7 @@ void loadConfig(Season *season) {
 
   char *tokstate;
   char *line = NULL;
-  size_t bufSize;
+  size_t bufSize = 0;
   int count = 1;
   while (getline(&line, &bufSize, fp) != -1) {
     char *key = strtok_r(line, " =", &tokstate);
@@ -247,7 +273,10 @@ void initBookingList(Season *season) {
 
 void saveBookingList(Season *season) {
   FILE *fp = fopen(tempfile, "w");
-  if (fp == NULL) exitError(errno, "failed to open file for writing");
+  if (fp == NULL) {
+    mprintf("failed to open file for writing.\n");
+    return;
+  }
 
   for (u32 i = 0; i < season->nUmbrella; i++) {
     BookingList *list = season->bookingList + i;
@@ -272,15 +301,17 @@ void loadBookingList(Season *season) {
   FILE *fp;
   fp = fopen(savefile, "r");
   if (fp == NULL) {
-    rename(tempfile, savefile);
-    fp = fopen(savefile, "r");
+    if (errno == ENOENT) {
+      mprintf("Il file 'data' non esiste, creazione di un nuovo database.\n");
+    } else {
+      exitError(errno, "Impossibile aprire il file 'data'.");
+    }
   }
-  if (fp == NULL) return;
 
   char *line = NULL;
   size_t bufSize = 0;
   for (u32 i = 0; i < season->nUmbrella; i++) {
-    CHECK(getline(&line, &bufSize, fp));
+    if (getline(&line, &bufSize, fp) == -1) exitError(i, "this line is missing.");
 
     BookingList *list = season->bookingList + i;
     pthread_mutex_lock(&list->mutex);
@@ -312,6 +343,7 @@ void loadBookingList(Season *season) {
     pthread_mutex_unlock(&list->mutex);
   }
   fclose(fp);
+  mprintf("Database caricato in memoria.\n");
 }
 
 void unlockBooking(Season *season, u32 idUmbrella) {
@@ -408,9 +440,10 @@ int swrite(int socket, char *text) {
 
 int readToks(int csd, char *buffer, size_t bufferSize, char *toks[], int maxToks) {
   static const char sep[] = " \n\r";
-  memset(buffer, 0, bufferSize);
   int error = read(csd, buffer, bufferSize);
   if (error < 1) return error;
+  if (error >= bufferSize) error = bufferSize -1;
+  buffer[error] = 0;
   char *tokstate;
   int nToks = 0;
   toks[0] = strtok_r(buffer, sep, &tokstate);
@@ -426,13 +459,16 @@ int ckm(char *a, char *b, int n1, int n2) {
   return !strcmp(a, b) && n1 == n2;
 }
 
-void *socketListener(void *commSocket) {
-  int csd = *(int *)commSocket;
+void *socketListener(void *connection) {
+  Connection *conn = (Connection *)connection;
+  int csd = conn->csd;
   int logged = 0;
   int user = 0;
   struct timeval tv = {0};
   tv.tv_sec = 60;
   setsockopt(csd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(struct timeval));
+
+  swrite(csd, "welcome");
 
   char buf[100];
   char *toks[10];
@@ -506,8 +542,8 @@ void *socketListener(void *commSocket) {
         free(umb.str);
 
       } else if (ckm(toks[0], "availrow", nToks, 4) ||
-                 ckm(toks[0], "availrow", nToks, 3) ||
-                 ckm(toks[0], "availrow", nToks, 2)) {
+          ckm(toks[0], "availrow", nToks, 3) ||
+          ckm(toks[0], "availrow", nToks, 2)) {
         int start, end;
         if (nToks == 2) {
           start = end = getCurrentYday();
@@ -522,13 +558,16 @@ void *socketListener(void *commSocket) {
         int is = row * season->nCols;
         int ie = is + season->nCols;
         String umb = {};
-        dcatf(&umb, "available");
-        for (int i = is; i < ie; i++) {
-          int avail = testBooking(season, user, i, start, end);
-          if (!avail) dcatf(&umb, " %d", i);
+        if (row < 0 || row >= season->nRows) swrite(csd, "navailable");
+        else {
+          dcatf(&umb, "available");
+          for (int i = is; i < ie; i++) {
+            int avail = testBooking(season, user, i, start, end);
+            if (!avail) dcatf(&umb, " %d", i);
+          }
+          if (!strcmp(umb.str, "available")) swrite(csd, "navailable");
+          else swrite(csd, umb.str);
         }
-        if (!strcmp(umb.str, "available")) swrite(csd, "navailable");
-        else swrite(csd, umb.str);
         free(umb.str);
 
       } else if (ckm(toks[0], "cancel", nToks, 2)) {
@@ -558,23 +597,76 @@ void *socketListener(void *commSocket) {
   }
 
   close(csd);
+  removeConnection(conns, conn->id);
   return NULL;
 }
 
-void *socketAccept(void *masterSocket) {
-  int msd = *(int *)masterSocket;
-  int socket[100];
-  int count = 0;
-  for (;;) {
-    socket[count] = accept(msd, NULL, 0);
-    pthread_t child;
-    pthread_attr_t attr;
-    pthread_attr_init(&attr);
-    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHE);
-    pthread_create(&child, &attr, socketListener, socket + count);
-    count++;
+void initConnectionList(ConnectionList *conns) {
+  conns->count = 0;
+  conns->max = MAX_CONN;
+  conns->closed = 0;
+  conns->open = -1;
+  pthread_mutex_init(&conns->mutex, 0);
+  Connection *conn = malloc(sizeof(Connection) * MAX_CONN);
+  for (int i = 0; i < MAX_CONN; i++){
+    conn[i].id = i;
+    conn[i].next = i+1;
   }
-  return NULL;
+  conn[MAX_CONN-1].next = -1;
+  conns->conn = conn;
+}
+
+Connection *addConnection(ConnectionList *conns, int csd) {
+  Connection *conn = NULL;
+  pthread_mutex_lock(&conns->mutex);
+
+  if (conns->closed != -1) {
+    conn = conns->conn + conns->closed;
+    conns->closed = conn->next;
+    conn->csd = csd;
+    conn->next = conns->open;
+    conn->prev = -1;
+    conns->open = conn->id;
+    if (conn->next != -1) conns->conn[conn->next].prev = conn->id;
+    conns->count++;
+  }
+
+  pthread_mutex_unlock(&conns->mutex);
+  return conn;
+}
+
+void removeConnection(ConnectionList *conns, int id) {
+  pthread_mutex_lock(&conns->mutex);
+
+  Connection *conn = conns->conn + id;
+  if (conn->next != -1) conns->conn[conn->next].prev = conn->prev;
+  if (conn->prev != -1) conns->conn[conn->prev].next = conn->next;
+  else  conns->open = conn->next;
+  conn->next = conns->closed;
+  conns->closed = conn->id;
+  conns->count--;
+
+  pthread_mutex_unlock(&conns->mutex);
+}
+
+void closeConnections(ConnectionList *conns, Season *season) {
+  pthread_mutex_lock(&conns->mutex);
+  for (int i = 0; i < season->nUmbrella; i++)
+    pthread_mutex_lock(&(season->bookingList[i].mutex));
+
+  //usleep(10000000);
+  int next = conns->open;
+  while (next != -1) {
+    Connection *c = conns->conn + next;
+    close(c->csd);
+    conns->count--;
+    next = c->next;
+  }
+  conns->closed = -1;
+
+  for (int i = 0; i < season->nUmbrella; i++)
+    pthread_mutex_unlock(&(season->bookingList[i].mutex));
+  pthread_mutex_unlock(&conns->mutex);
 }
 
 int serverMain(int argc, char **argv) {
@@ -594,14 +686,28 @@ int serverMain(int argc, char **argv) {
   initBookingList(season);
   loadBookingList(season);
 
+  conns = malloc(sizeof(ConnectionList));
+  initConnectionList(conns);
+
   int msd;
   CHECK(msd = socket(AF_INET, SOCK_STREAM, 0));
   CHECK(bind(msd, (struct sockaddr *)&sa, sizeof(sa)));
   listen(msd, 10); //buffer 10 requests
-  pthread_t child;
-  pthread_create(&child, NULL, socketAccept, &msd);
 
-  pthread_join(child, NULL);
+  for (;;) {
+    int csd = accept(msd, NULL, 0);
+    Connection *conn = addConnection(conns, csd);
+    if (conn == NULL) {
+      swrite(csd, "serverfull");
+      close(csd);
+      continue;
+    }
+    pthread_t child;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    pthread_create(&child, &attr, socketListener, conn);
+  }
   return 0;
 }
 
@@ -620,10 +726,11 @@ int clientMain(int argc, char **argv) {
   size_t size = 0;
   int len = 0;
   while(1) {
-    if ((len = getline(&line, &size, stdin)) == -1) continue;
-    write(sd, line, len);
+    memset(buffer, 0, 1000);
     if (read(sd, buffer, 1000) < 1) break;
     printf("%s\n", buffer);
+    if ((len = getline(&line, &size, stdin)) == -1) continue;
+    write(sd, line, len);
   }
   close(sd);
   return 0;
