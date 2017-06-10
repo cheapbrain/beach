@@ -1,5 +1,5 @@
 #define _POSIX_C_SOURCE 200809L
-#define _BSD_SOURCE
+#define _DEFAULT_SOURCE
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,7 +32,21 @@ char *logFile = "./log";
 FILE *logStream;
 pthread_mutex_t logMutex;
 
-#define MAX_CONN 3
+char *commands = "login id\n"
+                 "book\n"
+                 "  book id\n"
+                 "    book id [start] [end]\n"
+                 "    cancel\n"
+                 "available [start] [end]\n"
+                 "availrow row [start] [end]\n"
+                 "cancel id\n"
+                 "today\n"
+                 "start\n"
+                 "end\n"
+                 "save\n"
+                 "logout\n";
+
+#define MAX_CONN 10
 
 typedef struct Connection {
   int id;
@@ -47,6 +61,7 @@ typedef struct ConnectionList {
   u32 max;
   int closed;
   int open;
+  int msd;
   pthread_mutex_t mutex;
 } ConnectionList;
 
@@ -141,6 +156,7 @@ void _exitErrno(int id, char *source, int lineNumber) {
 
 void term(int sig) {
   closeConnections(conns, season);
+  close(conns->msd);
   saveBookingList(season);
   mprintf("exit!\n");
   exit(0);
@@ -303,6 +319,7 @@ void loadBookingList(Season *season) {
   if (fp == NULL) {
     if (errno == ENOENT) {
       mprintf("Il file 'data' non esiste, creazione di un nuovo database.\n");
+      return;
     } else {
       exitError(errno, "Impossibile aprire il file 'data'.");
     }
@@ -592,6 +609,8 @@ void *socketListener(void *connection) {
         char dateStr[32];
         getDateString(dateStr, 32, season->year, season->end);
         swrite(csd, dateStr);
+      } else if (ckm(toks[0], "help", nToks, 1)) {
+        swrite(csd, commands);
       } else swrite(csd, "unknown");
     }
   }
@@ -673,6 +692,8 @@ int serverMain(int argc, char **argv) {
   signal(SIGINT, term);
   signal(SIGTERM, term);
   signal(SIGQUIT, term);
+  signal(SIGHUP, term);
+  signal(SIGKILL, term);
   struct sockaddr_in sa = {0};
   sa.sin_family = AF_INET;
   sa.sin_port = htons(12345);
@@ -689,13 +710,14 @@ int serverMain(int argc, char **argv) {
   conns = malloc(sizeof(ConnectionList));
   initConnectionList(conns);
 
-  int msd;
-  CHECK(msd = socket(AF_INET, SOCK_STREAM, 0));
-  CHECK(bind(msd, (struct sockaddr *)&sa, sizeof(sa)));
-  listen(msd, 10); //buffer 10 requests
+  CHECK(conns->msd = socket(AF_INET, SOCK_STREAM, 0));
+  int opt = 1;
+  setsockopt(conns->msd, SOL_SOCKET, SO_REUSEADDR, (char*)&opt, sizeof(opt));
+  CHECK(bind(conns->msd, (struct sockaddr *)&sa, sizeof(sa)));
+  listen(conns->msd, 100); //buffer 10 requests
 
   for (;;) {
-    int csd = accept(msd, NULL, 0);
+    int csd = accept(conns->msd, NULL, 0);
     Connection *conn = addConnection(conns, csd);
     if (conn == NULL) {
       swrite(csd, "serverfull");
