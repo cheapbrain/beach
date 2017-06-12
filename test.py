@@ -1,4 +1,4 @@
-import pexpect, sys
+import pexpect
 
 pexpect.run("rm data")
 server = pexpect.spawn("./server")

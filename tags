@@ -1,0 +1,108 @@
+!_TAG_FILE_FORMAT	2	/extended format; --format=1 will not append ;" to lines/
+!_TAG_FILE_SORTED	1	/0=unsorted, 1=sorted, 2=foldcase/
+!_TAG_PROGRAM_AUTHOR	Darren Hiebert	/dhiebert@users.sourceforge.net/
+!_TAG_PROGRAM_NAME	Exuberant Ctags	//
+!_TAG_PROGRAM_URL	http://ctags.sourceforge.net	/official site/
+!_TAG_PROGRAM_VERSION	5.9~svn20110310	//
+Booking	beach.c	/^typedef struct Booking {$/;"	s	file:
+Booking	beach.c	/^} Booking;$/;"	t	typeref:struct:Booking	file:
+BookingList	beach.c	/^typedef struct BookingList {$/;"	s	file:
+BookingList	beach.c	/^} BookingList;$/;"	t	typeref:struct:BookingList	file:
+CHECK	beach.c	147;"	d	file:
+Connection	beach.c	/^typedef struct Connection {$/;"	s	file:
+Connection	beach.c	/^} Connection;$/;"	t	typeref:struct:Connection	file:
+ConnectionList	beach.c	/^typedef struct ConnectionList {$/;"	s	file:
+ConnectionList	beach.c	/^} ConnectionList;$/;"	t	typeref:struct:ConnectionList	file:
+FLAGS	Makefile	/^FLAGS = -lpthread -g -Wall -Werror -std=c99$/;"	m
+MAX_CONN	beach.c	51;"	d	file:
+SRC	Makefile	/^SRC = beach.c$/;"	m
+Season	beach.c	/^typedef struct Season {$/;"	s	file:
+Season	beach.c	/^} Season;$/;"	t	typeref:struct:Season	file:
+String	beach.c	/^typedef struct String {$/;"	s	file:
+String	beach.c	/^} String;$/;"	t	typeref:struct:String	file:
+_DEFAULT_SOURCE	beach.c	2;"	d	file:
+_POSIX_C_SOURCE	beach.c	1;"	d	file:
+_exitErrno	beach.c	/^void _exitErrno(int id, char *source, int lineNumber) {$/;"	f
+_exitError	beach.c	/^void _exitError(int id, char *msg, int lineNumber) {$/;"	f
+_testSetBooking	beach.c	/^int _testSetBooking(Season *season, u32 user, u32 idUmbrella, i16 start, i16 end, int testOnly) {$/;"	f
+addBooking	beach.c	/^int addBooking(Season *season, u32 user, u32 idUmbrella, i16 start, i16 end) {$/;"	f
+addConnection	beach.c	/^Connection *addConnection(ConnectionList *conns, int csd) {$/;"	f
+booking	beach.c	/^  Booking *booking;$/;"	m	struct:BookingList	file:
+bookingList	beach.c	/^  BookingList *bookingList;$/;"	m	struct:Season	file:
+c	test.py	/^  c = clients[i];$/;"	v
+c1	test.py	/^c1 = clients[1]$/;"	v
+c2	test.py	/^c2 = clients[2]$/;"	v
+capacity	beach.c	/^  u32 capacity;$/;"	m	struct:BookingList	file:
+ckm	beach.c	/^int ckm(char *a, char *b, int n1, int n2) {$/;"	f
+clientMain	beach.c	/^int clientMain(int argc, char **argv) {$/;"	f
+clientMain	beach.c	26;"	d	file:
+clientfull	test.py	/^  clientfull = pexpect.spawn(".\/client")$/;"	v
+clients	test.py	/^clients = list();$/;"	v
+closeConnections	beach.c	/^void closeConnections(ConnectionList *conns, Season *season) {$/;"	f
+closed	beach.c	/^  int closed;$/;"	m	struct:ConnectionList	file:
+commands	beach.c	/^char *commands = "\\nLista Comandi:\\n"$/;"	v
+configfile	beach.c	/^char *configfile = ".\/config";$/;"	v
+conn	beach.c	/^  Connection *conn;$/;"	m	struct:ConnectionList	file:
+conns	beach.c	/^ConnectionList *conns;$/;"	v
+count	beach.c	/^  u32 count;$/;"	m	struct:BookingList	file:
+count	beach.c	/^  u32 count;$/;"	m	struct:ConnectionList	file:
+csd	beach.c	/^  int csd;$/;"	m	struct:Connection	file:
+dcatf	beach.c	/^int dcatf(String *string, const char *format, ...) {$/;"	f
+end	beach.c	/^  i16 start, end;$/;"	m	struct:Booking	file:
+end	beach.c	/^  int start, end;$/;"	m	struct:Season	file:
+exitError	beach.c	148;"	d	file:
+getCurrentYday	beach.c	/^int getCurrentYday() {$/;"	f
+getDateString	beach.c	/^int getDateString(char *out, size_t len, int year, int yday) {$/;"	f
+getYday	beach.c	/^int getYday(int currentYear, int year, int mon, int mday) {$/;"	f
+i16	beach.c	/^typedef int16_t i16;$/;"	t	file:
+id	beach.c	/^  int id;$/;"	m	struct:Connection	file:
+initBookingList	beach.c	/^void initBookingList(Season *season) {$/;"	f
+initConnectionList	beach.c	/^void initConnectionList(ConnectionList *conns) {$/;"	f
+isLeap	beach.c	/^int isLeap(int year) {$/;"	f
+len	beach.c	/^  size_t len;$/;"	m	struct:String	file:
+loadBookingList	beach.c	/^void loadBookingList(Season *season) {$/;"	f
+loadConfig	beach.c	/^void loadConfig(Season *season) {$/;"	f
+lockBooking	beach.c	/^int lockBooking(Season *season, u32 user, u32 idUmbrella) {$/;"	f
+lockDay	beach.c	/^  i16 lockDay;$/;"	m	struct:BookingList	file:
+lockUser	beach.c	/^  u32 lockUser;$/;"	m	struct:BookingList	file:
+logFile	beach.c	/^char *logFile = ".\/log";$/;"	v
+logMutex	beach.c	/^pthread_mutex_t logMutex;$/;"	v
+logStream	beach.c	/^FILE *logStream;$/;"	v
+max	beach.c	/^  u32 max;$/;"	m	struct:ConnectionList	file:
+mprintf	beach.c	/^void mprintf(const char *format, ...) {$/;"	f
+msd	beach.c	/^  int msd;$/;"	m	struct:ConnectionList	file:
+mutex	beach.c	/^  pthread_mutex_t mutex;$/;"	m	struct:BookingList	file:
+mutex	beach.c	/^  pthread_mutex_t mutex;$/;"	m	struct:ConnectionList	file:
+nCols	beach.c	/^  int nRows, nCols;$/;"	m	struct:Season	file:
+nRows	beach.c	/^  int nRows, nCols;$/;"	m	struct:Season	file:
+nUmbrella	beach.c	/^  int nUmbrella;$/;"	m	struct:Season	file:
+next	beach.c	/^  int next;$/;"	m	struct:Connection	file:
+open	beach.c	/^  int open;$/;"	m	struct:ConnectionList	file:
+parseDate	beach.c	/^int parseDate(char *str, int currentYear) {$/;"	f
+parseYear	beach.c	/^int parseYear(char *str) {$/;"	f
+pdays	beach.c	/^const int pdays[] = {$/;"	v
+prev	beach.c	/^  int prev;$/;"	m	struct:Connection	file:
+readToks	beach.c	/^int readToks(int csd, char *buffer, size_t bufferSize, char *toks[], int maxToks) {$/;"	f
+removeBooking	beach.c	/^int removeBooking(Season *season, u32 user, u32 idUmbrella) {$/;"	f
+removeConnection	beach.c	/^void removeConnection(ConnectionList *conns, int id) {$/;"	f
+saveBookingList	beach.c	/^void saveBookingList(Season *season) {$/;"	f
+savefile	beach.c	/^char *savefile = ".\/data";$/;"	v
+season	beach.c	/^Season *season;$/;"	v
+server	test.py	/^server = pexpect.spawn(".\/server")$/;"	v
+serverMain	beach.c	/^int serverMain(int argc, char **argv) {$/;"	f
+serverMain	beach.c	24;"	d	file:
+size	beach.c	/^  size_t size;$/;"	m	struct:String	file:
+socketListener	beach.c	/^void *socketListener(void *connection) {$/;"	f
+start	beach.c	/^  i16 start, end;$/;"	m	struct:Booking	file:
+start	beach.c	/^  int start, end;$/;"	m	struct:Season	file:
+str	beach.c	/^  char *str;$/;"	m	struct:String	file:
+swrite	beach.c	/^int swrite(int socket, char *text) {$/;"	f
+tempfile	beach.c	/^char *tempfile = ".\/.temp";$/;"	v
+term	beach.c	/^void term(int sig) {$/;"	f
+testBooking	beach.c	/^int testBooking(Season *season, u32 user, u32 idUmbrella, i16 start, i16 end) {$/;"	f
+u32	beach.c	/^typedef uint32_t u32;$/;"	t	file:
+u64	beach.c	/^typedef uint64_t u64;$/;"	t	file:
+u8	beach.c	/^typedef uint8_t u8;$/;"	t	file:
+unlockBooking	beach.c	/^void unlockBooking(Season *season, u32 idUmbrella) {$/;"	f
+user	beach.c	/^  u32 user;$/;"	m	struct:Booking	file:
+year	beach.c	/^  int year;$/;"	m	struct:Season	file:

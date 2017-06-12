@@ -1,18 +1,19 @@
 #define _POSIX_C_SOURCE 200809L
 #define _DEFAULT_SOURCE
 
+#include <unistd.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <signal.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <errno.h>
 #include <pthread.h>
 #include <semaphore.h>
-#include <unistd.h>
-#include <stdarg.h>
 
 typedef int16_t i16;
 typedef uint8_t u8;
@@ -32,7 +33,8 @@ char *logFile = "./log";
 FILE *logStream;
 pthread_mutex_t logMutex;
 
-char *commands = "login id\n"
+char *commands = "\nLista Comandi:\n"
+                 "login id\n"
                  "book\n"
                  "  book id\n"
                  "    book id [start] [end]\n"
@@ -44,7 +46,7 @@ char *commands = "login id\n"
                  "start\n"
                  "end\n"
                  "save\n"
-                 "logout\n";
+                 "logout\n\n";
 
 #define MAX_CONN 10
 
@@ -278,6 +280,7 @@ void loadConfig(Season *season) {
 
   season->nUmbrella = season->nCols * season->nRows;
   fclose(fp);
+  free(line);
 }
 
 void initBookingList(Season *season) {
@@ -360,6 +363,7 @@ void loadBookingList(Season *season) {
     pthread_mutex_unlock(&list->mutex);
   }
   fclose(fp);
+  free(line);
   mprintf("Database caricato in memoria.\n");
 }
 
@@ -368,6 +372,7 @@ void unlockBooking(Season *season, u32 idUmbrella) {
   BookingList *list = season->bookingList + idUmbrella;
   pthread_mutex_lock(&list->mutex);
   list->lockUser = 0;
+  list->lockDay = 0;
   pthread_mutex_unlock(&list->mutex);
 }
 
@@ -376,7 +381,7 @@ int lockBooking(Season *season, u32 user, u32 idUmbrella) {
   BookingList *list = season->bookingList + idUmbrella;
   pthread_mutex_lock(&list->mutex);
   int today = getCurrentYday();
-  int avail = (list->lockUser == 0 || list->lockUser == user || list->lockDay < today);
+  int avail = (user == 0 || list->lockUser == 0 || list->lockUser == user || list->lockDay < today);
   if (avail) {
     list->lockUser = user;
     list->lockDay = today;
@@ -422,17 +427,20 @@ int _testSetBooking(Season *season, u32 user, u32 idUmbrella, i16 start, i16 end
     }
   }
   if(testOnly) goto success;
+
   if (list->count == list->capacity) {
     list->capacity += list->capacity + 1;
     array = list->booking = realloc(list->booking, sizeof(Booking) * list->capacity);
   }
   if (i < list->count)
     memmove(array + i + 1, array + i, (list->count - i) * sizeof(Booking));
+
   array[i].user = user;
   array[i].start = start;
   array[i].end = end;
   list->count++;
   list->lockUser = 0;
+  list->lockDay = 0;
 success:
   pthread_mutex_unlock(&list->mutex);
   return 0;
@@ -755,5 +763,6 @@ int clientMain(int argc, char **argv) {
     write(sd, line, len);
   }
   close(sd);
+  free(line);
   return 0;
 }
